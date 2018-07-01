@@ -1,0 +1,130 @@
+import re
+import common 
+
+class EchoRecog(object):
+    """ Echo Recognizer Class. Takes a rulefile """
+    def __init__(self,rulefile):
+        self.rulefile = rulefile
+        self.ruleparser = RuleParser(self.rulefile)
+        self.ruleparser.read()
+
+    def echo_recog(self,sentence):
+        "Takes a sentence,rulefile and marks echo"
+        lines = sentence.lines()
+        exceptions = ["-","-JOIN"]
+        l = 0
+        start_c = 0
+        pairs = {"left":[],"right":[]}
+        g = 1
+        nlines = []
+        n_written = 0
+        while l+g < len(lines):
+           	line = lines[l]
+
+           	#print line,lines[l+g].word,"g=",g,"l=",l,"start_c=",start_c,
+           	if lines[l+g] in exceptions or lines[l+g].tag == "SYM":
+           		g += 1
+
+           		print "Continuing"
+           		continue
+           	elif self.is_echo(line.morph.root, lines[l+g].morph.root):   
+      			nlines = nlines[:start_c] + [common.SSFLine("\t((\tUNK\t<fs etype=mwe esubtype=echo>")] + lines[start_c:l+g+1] + [common.SSFLine("\t))")] + lines[l+g:]
+           		n_written = l+g
+           		g = 1
+
+ 			if n_written < l:
+           		nlines.append(lines[l])
+           	l += 1
+           	start_c = l
+
+        nsent = common.SSFSentence.from_lines(nlines)
+        nsent.d()
+
+
+    
+    def is_echo(self,word1,word2):
+        "Takes two words, returns a boolean wheather they are echo"
+        r = self.ruleparser.parse(word1) 
+        if r == word2:
+        	return True
+        return False
+
+class RuleParser(object):
+    "Parses the rule file"
+    def __init__(self,rulefile):
+        self.rfile = rulefile
+        self.rulefile = open(rulefile)
+        self.rules = []
+    def read(self):
+        "Returns the rules"
+        for line in self.rulefile.readlines():
+            line = line.strip("\n")
+            if line.startswith("#") is False:
+                line = line.split("\t")
+                self.rules += [line]
+    
+    def parse(self,word):
+        "Parses every rule and returns a boolean value if any rule matches"
+        for rule in self.rules:
+            # Reading Constraints
+            constraints = rule[0].split(";")
+            satisfied = True
+            for constraint in constraints:
+                # Identifiying type of constraint
+                if "." in constraint:
+                    # Place holder constraint
+                    details = constraint.split("=") # Splitting Key & Value
+                    lhs = details[0].split(".") # Splitting placeholder and key
+                    if lhs[1] == "type": 
+                        # Constant or Vowel key
+                        _type = details[1]
+                        _placeholder = int(lhs[0][1]) -1
+                        char = word[_placeholder]
+                        if (_type == "V" and RuleParser.isVowel(char)) or (_type == "C" and not RuleParser.isVowel(char)):
+                            pass
+                        else: 
+                            satisfied = False
+                            break
+                    if lhs[1] == "vtype":
+                        _type = details[1]
+                        _placeholder = int(lhs[0][1]) -1
+                        char = word[_placeholder]
+                        nchar = word[_placeholder + 1]
+#                        print _type,char,nchar
+                        if (_type == "L" and char == nchar) or (_type == "S" and char != nchar):
+                            pass
+                        else:
+                            satisfied = False 
+                            break
+            if satisfied:
+                return self.resolve_return(word,rule[1])
+
+    def resolve_return(self,word,r):
+        _operators = re.compile("[+]")
+        s = _operators.split(r)
+        rt = ""
+        for i in s:
+            if i.startswith("$") == False:
+                rt += i
+            else:
+ 
+                if len(i) > 2:
+                    # Has extensions like :/~ etc 
+                    if ":" in i:
+                        _from = int(i[1]) -1
+                        _to = 0
+                        if i.find(":") == len(i) -1:
+                            rt += word[_from:]
+                        else:
+                            _to = int(i.split(":")[1]) -1
+                            rt += word[_from:_to]
+
+                        
+        return rt
+    
+    @staticmethod
+    def isVowel(char):
+        # Replace the list with CommonData.fromFile() or something like that
+        if char in ["a","A","i","I","u","U","e","o"]:
+            return True
+        return False

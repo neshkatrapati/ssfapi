@@ -1,0 +1,338 @@
+import re
+import pprint
+import sys,os
+import mmap
+
+
+
+
+chunk_regex = re.compile("\(\(.*?\)\)")
+class MorphStructure(object):
+    """ A Class to represent Morph Feature Structure """
+    def __init__(self,fs_string):
+        """ Basic Initialization Method """
+        self.fs_string = fs_string
+        self.fs = None
+
+    @staticmethod
+    def from_string(fs_string):
+        """ Returns a MorphStructure Object from the string """
+        mo = MorphStructure(fs_string)
+        mo.process()
+        return mo
+
+    
+
+    def process(self):
+        """ Processes The Feature Structure Into a Dict """
+        #print self.fs_string
+        t = self.fs_string.strip("<>").split(" ")
+        self.fs = {"af" : ["NA"]} # This is a patch ! Investigate
+        for ts in t:
+            if '=' in ts:
+                tx = ts.split("=")
+
+                if "," in tx[1]:
+                    self.fs[tx[0]] = tx[1].strip("'").split(",")
+                else:
+                    self.fs[tx[0]] = tx[1].strip("'")
+
+    @property
+    def root(self):
+        """ Get the root of the word """
+        return self.fs["af"][0]
+
+    def __str__(self):
+        return self.fs_string # Temporary
+
+    def d(self):
+        pprint.pprint( self.fs )
+
+class SSFPropertyOverflow(Exception):
+    def __init__(self,property):
+        self.property = property
+    def __str__(self):
+        return "{0} Property Not Found in the Line".format(self.property)
+
+
+class SSFLine(object):
+    """ Represents Each Line of an SSF Sentence """
+    # Inherit this for SSF Chunk etc.
+    def __init__(self,line):
+        """ Initialize from String """
+        self.line = line.split("\t")
+
+    @property
+    def index(self):
+        if len(self.line) > 0:
+            return self.line[0]
+        else:
+            raise SSFPropertyOverflow("index") # Replace with constants
+
+    @property
+    def word(self):
+        if len(self.line) > 1:
+            return self.line[1]
+        else:
+            raise SSFPropertyOverflow("word") # Replace with constants
+
+    @property
+    def tag(self):
+        if len(self.line) > 2:
+            return self.line[2]
+        else:
+            raise SSFPropertyOverflow("tag") # Replace with constants
+
+    @property
+    def morph(self):
+        if len(self.line) > 3:
+            return MorphStructure.from_string(self.line[3])
+        else:
+            raise SSFPropertyOverflow("morph") # Replace with constants
+
+    def d(self,seperator = "\t",ignore_pos=False):
+        _line = self.line 
+        if ignore_pos:
+            _line = [t for i, t in enumerate(_line) if i != 2]
+        return seperator.join(_line)
+
+    def __str__(self):
+        return self.d()
+
+class Chunk(object):
+    def __init__(self, lines = None):
+        self.lines = lines
+
+    @staticmethod
+    def from_lines(lines):
+        chunk_open_tag = lines[0]
+        c = Chunk()
+        c.head = None
+        c.pos = chunk_open_tag.tag
+        c.drel = None
+        c.name = None
+        c.lines = lines
+        if "head" in chunk_open_tag.morph.fs:
+            chunk_head = chunk_open_tag.morph.fs["head"]
+            c.head = chunk_head
+        if "name" in chunk_open_tag.morph.fs:
+            chunk_name = chunk_open_tag.morph.fs["name"]
+            c.name = chunk_name
+        if "drel" in chunk_open_tag.morph.fs:
+            chunk_drel = chunk_open_tag.morph.fs["drel"]
+            c.drel = chunk_drel
+        return c
+
+class SSF(object):
+    def __init__(self,ssf):
+        self.ssf = ssf
+        self.current = 0 # Used in Iterators
+
+    @staticmethod
+    def from_file(filename, mmap_state = False):
+        """ Reads from File and Returns a New SSF Object """
+        if mmap_state == False:
+            ssf = open(filename).read()
+        else:
+            size = os.stat(filename).st_size
+            f = open(filename)
+            ssf = mmap.mmap ( f.fileno(), size, access=mmap.ACCESS_READ )
+
+        ssfo =  SSF(ssf)
+        ssfo._sentences()
+        return ssfo
+
+    def _sentences(self):
+        """ Processes Sentences """
+        sentence_tag_regex = re.compile('<Sentence[\s\S]*?</Sentence>\n?')
+        sentences = re.findall(sentence_tag_regex,self.ssf)
+        self.sentence_list = [ SSFSentence.from_string(sentence) for sentence in sentences ]
+
+    def sentences(self):
+        """ Returns Sentences """
+        return self.sentence_list
+
+    def __iter__(self):
+        return self
+
+    def next(self):
+        """ Iterator for the sentences """
+        if self.current < len(self.sentence_list):
+            self.current += 1
+            return self.sentence_list[self.current - 1]
+        else:
+            self.current = 0
+            raise StopIteration
+
+    def __str__(self):
+        """ The tostring method """
+        return "{0} Sentences".format(len(self.sentence_list))
+
+
+class SSFMMAP(object):
+    """docstring for SSFMMAP"""
+    def __init__(self, filename, ssf = None):
+        self.ssf = ssf
+        self.filename = filename
+
+    def __enter__(self):
+        self.init_file(self.filename)
+        return self
+    
+    def __exit__(self, type, value, traceback):
+        self.ssf.close()
+
+
+    def init_file(self, filename):
+        size = os.stat(filename).st_size
+        f = open(filename)
+        self.ssf = mmap.mmap ( f.fileno(), size, access=mmap.ACCESS_READ )
+
+    def next_sentence(self):
+        buff = ""
+        buf_start = False
+        line = ""
+        while True:
+            line = self.ssf.readline()
+            if line == '':
+                return None
+            if line.startswith("<Sentence"):
+                buf_start = True
+            if buf_start:
+                buff += line
+            if line.startswith("</Sentence"):
+                return SSFSentence.from_string(buff)
+
+    def __iter__(self):
+        return self
+
+    def next(self):
+        """ Iterator for the sentences """
+        next_sentence = self.next_sentence()
+        if next_sentence != None:
+            return next_sentence
+        else:
+            raise StopIteration
+
+
+class SSFSentence(object):
+    """ Represents a Sentence """
+
+    display_mode_full = "full"
+    display_mode_flat = "flat"
+    display_mode_pos = "pos"
+    chunk_markers = ["((","))"]
+    word_mode_wordform = "wordform"
+    word_mode_root = "root"
+
+    def __init__(self, ssf):
+        self.ssf = ssf
+
+
+    @staticmethod
+    def from_string(sentence):
+        ssfso  = SSFSentence(sentence)
+        ssfso._lines()
+        return ssfso
+
+    @staticmethod
+    def from_lines(lines):
+        ssfso = SSFSentence("")
+        i = 1
+        e = [0]
+        for line in lines:
+            if len(e) <= 1:
+                e[0]  = str(i)
+
+            index = e[0]
+
+            if line.word == "((":
+                e.append(str(1))
+            elif line.word == "))":
+                e = e[:-1]
+                e[0] = str(int(e[0]) + 1)
+                index = ""
+            else:
+                if len(e) > 1:
+                    index += "." + ".".join(e[1:])
+                    e[-1] = str(int(e[-1]) + 1)
+
+            line.line[0] = index
+            i+= 1
+        ssfso.line_list = lines
+        return ssfso
+
+    def chunks(self):
+        chunk_lines = []        
+        in_chunk = False
+        for index, line in enumerate(self.lines()):            
+            if line.word == '((':                
+                in_chunk = True
+            if in_chunk:
+                chunk_lines.append(line)
+            if line.word == '))':                
+                yield Chunk.from_lines(chunk_lines)
+                chunk_lines = []
+                in_chunk = False
+
+
+
+    def _lines(self):
+        """ Processes all Lines """
+        self.line_list = [SSFLine(line) for line in  self.ssf.split("\n") if (line.strip("\n\t ").startswith("<") == False) and (len(line) > 2)]
+
+    def lines(self):
+        """ Returns all Lines """
+        return self.line_list
+
+    def __str__(self):
+        return "{0} Lines".format(len(self.line_list))
+
+    def __len__(self):
+    	return len(self.lines())
+
+
+
+
+    def d(self,mode = display_mode_full,word_mode = word_mode_wordform, ignore_pos = False):
+        if mode == SSFSentence.display_mode_full:
+            r = "<Sentence id=\"1\">\n"
+            r += "\n".join([line.d(ignore_pos = ignore_pos) for line in self.lines()])
+            # for line in self.lines():
+            #     print line
+            r += "\n</Sentence>"
+            return r
+        elif mode in [SSFSentence.display_mode_flat,SSFSentence.display_mode_pos]:
+            words = []
+            for line in self.lines():
+                if line.word in SSFSentence.chunk_markers:
+                    if line.word == SSFSentence.chunk_markers[-1]:
+                        print '|'.join(words),
+                        words = []
+                else:
+                    extra = ""
+                    if mode == SSFSentence.display_mode_pos:
+                        extra = "/{pos}".format(pos = line.tag)
+
+                    if word_mode == SSFSentence.word_mode_wordform:
+                        words.append(line.word+extra)
+                    else:
+                        print line.morph.root+extra,
+            if len(words) != 0:
+                return ' '.join(words)
+#            print ""
+
+
+class SSFUtils(object):
+    """ A Mix of all the SSF Utilities """
+    @staticmethod
+    def remove_chunks(ssfsentence):
+        """ Removes chunk information if any and returns a new SSF"""
+        
+        lines = ssfsentence.lines()
+        new_lines = []
+        for l in range(len(lines)):
+            line = lines[l]
+            if line.word not in ["((","))"]:
+                new_lines.append(line)
+        return SSFSentence.from_lines(new_lines)
